@@ -246,8 +246,12 @@ func (r result) expect(t *testing.T, exit int, status string) {
 // refused fails unless the first result is refused with this code.
 func (r result) refused(t *testing.T, code string) {
 	t.Helper()
-	if r.exit != 5 || len(r.json.Results) == 0 || r.json.Results[0].Error == nil || r.json.Results[0].Error.Code != code {
-		t.Fatalf("exit %d, want 5 %s\n%s%s", r.exit, code, r.stdout, r.stderr)
+	exit := 5
+	if code == "descendant_unreadable" {
+		exit = 4
+	}
+	if r.exit != exit || len(r.json.Results) == 0 || r.json.Results[0].Error == nil || r.json.Results[0].Error.Code != code {
+		t.Fatalf("exit %d, want %d %s\n%s%s", r.exit, exit, code, r.stdout, r.stderr)
 	}
 }
 
@@ -293,6 +297,13 @@ func serve(mode string) {
 		fmt.Println(port)
 	case "share":
 		announce(reuse("127.0.0.1:" + os.Getenv("PORTLY_E2E_PORT")))
+	case "with-child":
+		// Like a reloader: the child may have inherited the socket, and Windows can't tell
+		listener := listen("127.0.0.1:0")
+		helper := exec.Command(os.Args[0])
+		helper.Env = append(os.Environ(), modeVariable+"=idle")
+		check(helper.Start())
+		fmt.Println(portOf(listener), helper.Process.Pid)
 	case "parent":
 		// The child is the real test binary, so only the parent carries the chosen name
 		server := exec.Command(os.Getenv(binaryVariable))
@@ -468,6 +479,20 @@ func TestWindowsExpect(t *testing.T) {
 	kill(t, s.ports[0], "--expect", id).expect(t, 0, "stopped")
 }
 
+// TestWindowsChildMayHoldTheSocket: Windows names only a socket's creator, so an owner with children is refused.
+func TestWindowsChildMayHoldTheSocket(t *testing.T) {
+	s := start(t, "with-child")
+	child, err := os.FindProcess(atoi(t, s.ports[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Kill() })
+	kill(t, s.ports[0]).refused(t, "descendant_unreadable")
+	if !s.alive() || isFree(s.ports[0]) {
+		t.Error("an owner with a child was killed")
+	}
+}
+
 // TestWindowsOwnAncestorIsProtected covers a port of the process that launched Portly.
 func TestWindowsOwnAncestorIsProtected(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -561,6 +586,24 @@ func gateServer(t *testing.T, program string, files map[string]string, arguments
 	return ""
 }
 
+// held fails if a refused server's port was freed.
+func held(t *testing.T, port string) {
+	t.Helper()
+	if isFree(port) {
+		t.Errorf("port %s was freed by a refused stop", port)
+	}
+}
+
+// atoi reads a number a server printed.
+func atoi(t *testing.T, text string) int {
+	t.Helper()
+	number, err := strconv.Atoi(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return number
+}
+
 // requires skips a gate test when a Python module is missing.
 func requires(t *testing.T, module string) {
 	t.Helper()
@@ -588,17 +631,13 @@ func TestGateWindowsNode(t *testing.T) {
 	gone(t, port)
 }
 
-// TestGateWindowsNodeCluster: Windows lists the primary as the owner, and the workers exit with it.
+// TestGateWindowsNodeCluster: the workers share the primary's socket unseen, so it is refused.
 func TestGateWindowsNodeCluster(t *testing.T) {
 	port := gateServer(t, "node", map[string]string{"s.js": `const c=require('cluster');
 if(c.isPrimary){c.fork();c.fork();setTimeout(()=>process.exit(9),60000)}
 else{require('http').createServer((q,r)=>r.end('ok')).listen(process.env.PORT,'127.0.0.1')}`}, "s.js")
-	got := kill(t, port)
-	got.expect(t, 0, "stopped")
-	if killed := got.json.Targets[0].Outcome.KilledPIDs; len(killed) != 1 {
-		t.Errorf("killed %v, want only the primary", killed)
-	}
-	gone(t, port)
+	kill(t, port).refused(t, "descendant_unreadable")
+	held(t, port)
 }
 
 // TestGateWindowsPythonHTTP kills python -m http.server.
@@ -618,13 +657,13 @@ func TestGateWindowsFlask(t *testing.T) {
 	gone(t, port)
 }
 
-// TestGateWindowsFlaskReload kills the reloader's child, and the reloader must not bring it back.
+// TestGateWindowsFlaskReload: the reloader creates the socket and its child inherits it, so it is refused.
 func TestGateWindowsFlaskReload(t *testing.T) {
 	requires(t, "flask")
 	files := map[string]string{"app.py": "from flask import Flask\napp = Flask(__name__)\n"}
 	port := gateServer(t, "python", files, "-m", "flask", "run", "--debug", "--port", "PORT")
-	kill(t, port).expect(t, 0, "stopped")
-	gone(t, port)
+	kill(t, port).refused(t, "descendant_unreadable")
+	held(t, port)
 }
 
 // TestGateWindowsDjango kills runserver through its reloader's child.
@@ -646,16 +685,11 @@ func TestGateWindowsUvicorn(t *testing.T) {
 	gone(t, port)
 }
 
-// TestGateWindowsUvicornReload: the reloader and its worker share one socket, so the kill is refused or frees the port.
+// TestGateWindowsUvicornReload: the reloader and its worker share one socket, so it is refused.
 func TestGateWindowsUvicornReload(t *testing.T) {
 	requires(t, "uvicorn")
 	files := map[string]string{"app.py": "async def app(scope, receive, send):\n    pass\n"}
 	port := gateServer(t, "python", files, "-m", "uvicorn", "app:app", "--reload", "--port", "PORT")
-	got := kill(t, port)
-	t.Logf("exit %d: %s", got.exit, got.stdout)
-	if got.exit == 0 {
-		gone(t, port)
-		return
-	}
-	got.refused(t, "ambiguous_owner")
+	kill(t, port).refused(t, "descendant_unreadable")
+	held(t, port)
 }

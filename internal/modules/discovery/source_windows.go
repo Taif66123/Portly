@@ -207,8 +207,9 @@ func parseTree(base unsafe.Pointer, size uintptr) map[int]treeEntry {
 // basicProcess fills what does not need a handle. Windows has no signals.
 func basicProcess(pid int, tree map[int]treeEntry) domain.Process {
 	entry := tree[pid]
+	// Partial: the tables name only the process that created a socket, never children that inherited it
 	found := domain.Process{
-		Name: entry.name, Kernel: pid <= systemPID, Sockets: domain.Complete, TTY: domain.Unknown,
+		Name: entry.name, Kernel: pid <= systemPID, Sockets: domain.Partial, TTY: domain.Unknown,
 		Caught: domain.No, Ignored: domain.No, Blocked: domain.No,
 		Unit: domain.Unit{Kind: domain.UnitNone}, Job: domain.Job{Known: true},
 	}
