@@ -1,0 +1,45 @@
+name: Windows install
+
+# This checkout's install.ps1 and uninstall.ps1 on each Windows runner and PowerShell, against a published release
+on:
+  push:
+    paths: ["resources/*.ps1", "tests/windows-install.ps1", ".github/workflows/windows-install.yml"]
+  pull_request:
+    paths: ["resources/*.ps1", "tests/windows-install.ps1", ".github/workflows/windows-install.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, arch: amd64 }
+          - { os: windows-2025, arch: amd64 }
+          - { os: windows-11-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/windows-install.ps1 -Shell powershell -Arch ${{ matrix.arch }}
+      - name: PowerShell 7
+        shell: pwsh
+        run: ./tests/windows-install.ps1 -Shell pwsh -Arch ${{ matrix.arch }}
+      - name: 32-bit Windows PowerShell gets the 64-bit build
+        if: matrix.arch == 'amd64'
+        shell: powershell
+        run: ./tests/windows-install.ps1 -Shell C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -Arch amd64
+      - name: The README line for Windows without curl.exe
+        shell: powershell
+        run: |
+          $bin = Join-Path $env:LOCALAPPDATA 'Programs\Portly\portly.exe'
+          [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $env:PORTLY_VERSION='0.8.3'; iex (New-Object Net.WebClient).DownloadString('https://github.com/AnindyaMajumder/Portly/releases/download/v0.8.3/install.ps1')
+          if ((& $bin --version) -ne 'portly 0.8.3') { throw 'wrong version after the fallback line' }
+          Get-Content resources/uninstall.ps1 | Out-String | iex
+          if (Test-Path $bin) { throw 'uninstall.ps1 left portly behind' }
