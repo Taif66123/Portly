@@ -276,6 +276,20 @@ func freePort(t *testing.T) string {
 	return portOf(listener)
 }
 
+// bothFree is a port number that TCP and UDP can both bind, since Windows reserves some for one only.
+func bothFree(t *testing.T) string {
+	t.Helper()
+	for range 20 {
+		port := freePort(t)
+		if conn, err := net.ListenPacket("udp", "127.0.0.1:"+port); err == nil {
+			_ = conn.Close()
+			return port
+		}
+	}
+	t.Fatal("no port is free for both TCP and UDP")
+	return ""
+}
+
 // serve is the server side of every test.
 func serve(mode string) {
 	go func() {
@@ -284,7 +298,7 @@ func serve(mode string) {
 	}()
 	switch mode {
 	case "tcp":
-		announce(listen("127.0.0.1:0"))
+		announce(listen("127.0.0.1:" + os.Getenv("PORTLY_E2E_PORT")))
 	case "two-ports":
 		announce(listen("127.0.0.1:0"), listen("127.0.0.1:0"))
 	case "dual":
@@ -431,8 +445,9 @@ func TestWindowsUDPNeedsToBeNamed(t *testing.T) {
 
 // TestWindowsSameNumberTCPAndUDP never mixes the two.
 func TestWindowsSameNumberTCPAndUDP(t *testing.T) {
-	tcp := start(t, "tcp")
-	udp := start(t, "udp", "PORTLY_E2E_PORT="+tcp.ports[0])
+	port := bothFree(t)
+	tcp := start(t, "tcp", "PORTLY_E2E_PORT="+port)
+	udp := start(t, "udp", "PORTLY_E2E_PORT="+port)
 	kill(t, tcp.ports[0]).expect(t, 0, "stopped")
 	if !udp.alive() {
 		t.Error("the UDP owner was killed")
@@ -547,45 +562,67 @@ func TestWindowsRepeatedStops(t *testing.T) {
 	}
 }
 
-// gateServer runs a real server in a directory and waits for its port.
+// gateServer runs a real server in a directory and waits for its port. Windows hands out a port
+// another process can take before the server binds it, so a server that exits early gets a new one.
 func gateServer(t *testing.T, program string, files map[string]string, arguments ...string) string {
 	t.Helper()
 	path, err := exec.LookPath(program)
 	if err != nil {
 		t.Skipf("gate not proven here: %s is not installed", program)
 	}
-	dir, port := t.TempDir(), freePort(t)
+	dir := t.TempDir()
 	for name, text := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for i, argument := range arguments {
-		arguments[i] = strings.ReplaceAll(argument, "PORT", port)
-	}
-	command := exec.Command(path, arguments...)
-	command.Dir = dir
-	command.Env = append(os.Environ(), "PORT="+port, "PYTHONUNBUFFERED=1")
-	command.Stdout, command.Stderr = os.Stderr, os.Stderr
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		// The whole tree, so reloader children leave the directory before it is removed
-		_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(command.Process.Pid)).Run()
-		_ = command.Process.Kill()
-		_ = command.Wait()
-	})
-	for range 300 {
-		if !isFree(port) {
+	for range 3 {
+		port := freePort(t)
+		var filled []string
+		for _, argument := range arguments {
+			filled = append(filled, strings.ReplaceAll(argument, "PORT", port))
+		}
+		command := exec.Command(path, filled...)
+		command.Dir = dir
+		command.Env = append(os.Environ(), "PORT="+port, "PYTHONUNBUFFERED=1")
+		command.Stdout, command.Stderr = os.Stderr, os.Stderr
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited := make(chan struct{})
+		go func() {
+			_ = command.Wait()
+			close(exited)
+		}()
+		t.Cleanup(func() {
+			// The whole tree, so reloader children leave the directory before it is removed
+			_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(command.Process.Pid)).Run()
+			_ = command.Process.Kill()
+			<-exited
+		})
+		if waitListening(port, exited) {
 			// Reloaders start their worker after the port opens
 			time.Sleep(time.Second)
 			return port
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("%s did not listen", program)
 	return ""
+}
+
+// waitListening is true once the port is taken while the server still runs.
+func waitListening(port string, exited <-chan struct{}) bool {
+	for range 300 {
+		select {
+		case <-exited:
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
+		if !isFree(port) {
+			return true
+		}
+	}
+	return false
 }
 
 // held fails if a refused server's port was freed.
