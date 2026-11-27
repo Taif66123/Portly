@@ -571,6 +571,8 @@ func gateServer(t *testing.T, program string, files map[string]string, arguments
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		// The whole tree, so reloader children leave the directory before it is removed
+		_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(command.Process.Pid)).Run()
 		_ = command.Process.Kill()
 		_ = command.Wait()
 	})
