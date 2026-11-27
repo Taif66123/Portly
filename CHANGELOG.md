@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Windows: `install.ps1` adds the install folder to the user `PATH`, keeping `%VARIABLE%` entries as they are, so `portly` runs in new terminals; `uninstall.ps1` removes it. It installs the 64-bit build also from 32-bit PowerShell, and the ARM64 build from emulated PowerShell on ARM64. It turns on TLS 1.2 where Windows PowerShell lacks it, and stops early on Windows older than 10. The README has an install line for Windows without `curl.exe`.
+
 ## 0.8.3 (2026-11-27)
 
 - Same program as 0.8.2. The release check for the Windows cmd install command is fixed.

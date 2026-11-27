@@ -52,7 +52,13 @@ $env:PORTLY_VERSION='0.8.3'; curl.exe -fsSL https://github.com/AnindyaMajumder/P
 powershell -NoProfile -Command "$env:PORTLY_VERSION='0.8.3'; curl.exe -fsSL https://github.com/AnindyaMajumder/Portly/releases/download/v0.8.3/install.ps1 | Out-String | iex"
 ```
 
-All three install for the current user, without administrator rights, and verify the checksum. They put `portly` in `~/.local/bin`, or `portly.exe` in `%LOCALAPPDATA%\Programs\Portly`, and print the command to add that folder to your `PATH` if needed. In WSL you get the Linux build, which sees the ports of the WSL machine, not of Windows.
+**Windows without `curl.exe`** (Windows Server 2016, Windows 10 before 1803)
+
+```
+[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $env:PORTLY_VERSION='0.8.3'; iex (New-Object Net.WebClient).DownloadString('https://github.com/AnindyaMajumder/Portly/releases/download/v0.8.3/install.ps1')
+```
+
+All of them install for the current user, without administrator rights, and verify the checksum. `install.sh` puts `portly` in `~/.local/bin` and prints the command to add that folder to your `PATH` if needed. `install.ps1` puts `portly.exe` in `%LOCALAPPDATA%\Programs\Portly` and adds that folder to your user `PATH`, so `portly` works in that PowerShell at once and in terminals opened afterwards (restart VS Code and similar apps first); `uninstall.ps1` takes it out again. It picks the build for the processor of Windows itself, also from 32-bit or emulated PowerShell, and needs Windows 10, Windows Server 2016 or later. In WSL you get the Linux build, which sees the ports of the WSL machine, not of Windows.
 
 Variables go after the pipe, so `sh` sees them. To choose the folder:
 

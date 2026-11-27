@@ -27,7 +27,8 @@ func startedByTest(snapshot domain.Snapshot, candidate candidate) bool {
 		return candidate.container.ComposeProject == testProject
 	}
 	parent := snapshot.Processes[snapshot.Processes[snapshot.Host.SelfPID].PPID]
-	isTest := parent.PID > 1 && !parent.UserManager && strings.HasSuffix(parent.Exe, ".test")
+	// Windows names test binaries e2e.test.exe
+	isTest := parent.PID > 1 && !parent.UserManager && strings.HasSuffix(strings.TrimSuffix(parent.Exe, ".exe"), ".test")
 	ancestors, isComplete := snapshot.Ancestors(candidate.target.Root.PID)
 	isDescendant := slices.ContainsFunc(ancestors, func(ancestor domain.Process) bool { return ancestor.PID == parent.PID })
 	return isComplete && isTest && isDescendant

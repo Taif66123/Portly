@@ -16,6 +16,15 @@ func TestEvidenceBuildActsOnlyOnItsOwnChildren(t *testing.T) {
 	if !startedByTest(snapshot, child) {
 		t.Error("a child of the launching process is allowed")
 	}
+	change(&snapshot, shellPID, func(p *domain.Process) { p.Exe = `C:\Temp\go-build\e2e.test.exe` })
+	if !startedByTest(snapshot, child) {
+		t.Error("a child of a Windows test binary is allowed")
+	}
+	change(&snapshot, shellPID, func(p *domain.Process) { p.Exe = `C:\Windows\System32\notepad.exe` })
+	if startedByTest(snapshot, child) {
+		t.Error("a child of another Windows program was allowed")
+	}
+	change(&snapshot, shellPID, func(p *domain.Process) { p.Exe = "/tmp/go-build/e2e.test" })
 	stranger := developer(700, 1)
 	add(&snapshot, stranger)
 	if startedByTest(snapshot, candidate{target: domain.StopTarget{Kind: domain.KindProcess, Root: stranger.ProcessID}}) {

@@ -1,9 +1,18 @@
-# Install Portly for the current user. Verifies the checksum.
+# Install Portly for the current user. Verifies the checksum and adds the folder to the user PATH.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $repository = 'https://github.com/AnindyaMajumder/Portly'
+if ([Environment]::OSVersion.Version.Major -lt 10) { throw 'Portly needs Windows 10, Windows Server 2016 or later' }
+# Older Windows PowerShell may not offer TLS 1.2, which GitHub requires
+$protocols = [Net.ServicePointManager]::SecurityProtocol
+if ($protocols -ne 0 -and -not ($protocols -band [Net.SecurityProtocolType]::Tls12)) {
+    [Net.ServicePointManager]::SecurityProtocol = $protocols -bor [Net.SecurityProtocolType]::Tls12
+}
 $directory = if ($env:PORTLY_INSTALL_DIR) { $env:PORTLY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\Portly' }
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) { 'AMD64' { 'amd64' } 'ARM64' { 'arm64' } 'x86' { '386' } default { throw "unsupported processor $_" } }
+# The processor of Windows itself, also from 32-bit or emulated PowerShell
+$native = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
+if (-not $native) { $native = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE } }
+$arch = switch ($native) { 'AMD64' { 'amd64' } 'ARM64' { 'arm64' } 'x86' { '386' } default { throw "unsupported processor $_" } }
 
 # The latest release, from GitHub's redirect like install.sh, which has no rate limit
 $version = "$env:PORTLY_VERSION".TrimStart('v')
@@ -32,12 +41,27 @@ try {
     if (-not $line -or ($line -split '\s+')[0] -ne $actual) { throw 'checksum does not match, nothing was installed' }
     Expand-Archive (Join-Path $temporary $archive) $temporary
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    $directory = (Resolve-Path -LiteralPath $directory).ProviderPath.TrimEnd('\')
     Move-Item -Force (Join-Path $temporary 'portly.exe') (Join-Path $directory 'portly.exe')
-    Write-Output "Installed portly $version in $directory"
-    if (($env:PATH -split ';') -notcontains $directory) {
-        Write-Output "$directory is not on your PATH. Add it, then open a new terminal:"
-        Write-Output "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';$directory', 'User')"
-    }
+    Write-Output "Installed portly $version (windows/$arch) in $directory"
 } finally {
     Remove-Item -Recurse -Force $temporary
 }
+
+# Read and write the registry value itself: going through [Environment] would expand %VARIABLES% in the user's Path for good
+$key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+try {
+    $path = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+    $kind = if ($path) { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+    $entries = @($path -split ';' | Where-Object { $_ })
+    $isListed = $entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -eq $directory }
+    if (-not $isListed) {
+        $key.SetValue('Path', (($entries + $directory) -join ';'), $kind)
+        # Removing a variable that does not exist changes nothing, and tells running programs to reload the environment
+        [Environment]::SetEnvironmentVariable('PORTLY_PATH_REFRESH', $null, 'User')
+        Write-Output "Added $directory to your user PATH. Other terminals see it once reopened; restart VS Code and similar apps first."
+    }
+} finally {
+    $key.Close()
+}
+if (-not ($env:Path -split ';' | Where-Object { $_.TrimEnd('\') -eq $directory })) { $env:Path = "$($env:Path.TrimEnd(';'));$directory" }
